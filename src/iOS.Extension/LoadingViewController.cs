@@ -1,63 +1,36 @@
 using System;
-using System.Drawing;
 using System.Diagnostics;
-using Bit.App.Abstractions;
-using Bit.App.Repositories;
-using Bit.App.Services;
-using Bit.iOS.Core.Services;
 using Foundation;
-using Microsoft.Practices.Unity;
 using UIKit;
-using XLabs.Ioc;
-using XLabs.Ioc.Unity;
 using Bit.iOS.Core;
-using Newtonsoft.Json;
 using Bit.iOS.Extension.Models;
 using MobileCoreServices;
-using Plugin.Settings.Abstractions;
-using Plugin.Connectivity;
-using Plugin.Fingerprint;
 using Bit.iOS.Core.Utilities;
 using Bit.App.Resources;
 using Bit.iOS.Core.Controllers;
+using System.Collections.Generic;
+using Bit.iOS.Core.Models;
+using Bit.Core.Utilities;
+using Bit.Core.Abstractions;
 
 namespace Bit.iOS.Extension
 {
     public partial class LoadingViewController : ExtendedUIViewController
     {
         private Context _context = new Context();
-        private bool _setupHockeyApp = false;
-        private readonly JsonSerializerSettings _jsonSettings =
-            new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore };
-        private IGoogleAnalyticsService _googleAnalyticsService;
-        private ISettings _settings;
+        private bool _initedHockeyApp;
 
-        public LoadingViewController(IntPtr handle) : base(handle)
+        public LoadingViewController(IntPtr handle)
+            : base(handle)
         { }
 
         public override void ViewDidLoad()
         {
-            SetIoc();
-
+            InitApp();
             base.ViewDidLoad();
-            View.BackgroundColor = new UIColor(red: 0.94f, green: 0.94f, blue: 0.96f, alpha: 1.0f);
+            Logo.Image = new UIImage(ThemeHelpers.LightTheme ? "logo.png" : "logo_white.png");
+            View.BackgroundColor = ThemeHelpers.SplashBackgroundColor;
             _context.ExtContext = ExtensionContext;
-            _googleAnalyticsService = Resolver.Resolve<IGoogleAnalyticsService>();
-            _settings = Resolver.Resolve<ISettings>();
-
-            if(!_setupHockeyApp)
-            {
-                var appIdService = Resolver.Resolve<IAppIdService>();
-                var crashManagerDelegate = new HockeyAppCrashManagerDelegate(appIdService, Resolver.Resolve<IAuthService>());
-                var manager = HockeyApp.iOS.BITHockeyManager.SharedHockeyManager;
-                manager.Configure("51f96ae568ba45f699a18ad9f63046c3", crashManagerDelegate);
-                manager.CrashManager.CrashManagerStatus = HockeyApp.iOS.BITCrashManagerStatus.AutoSend;
-                manager.UserId = appIdService.AppId;
-                manager.StartManager();
-                manager.Authenticator.AuthenticateInstallation();
-                _setupHockeyApp = true;
-            }
-
             foreach(var item in ExtensionContext.InputItems)
             {
                 var processed = false;
@@ -75,7 +48,6 @@ namespace Bit.iOS.Extension
                         break;
                     }
                 }
-
                 if(processed)
                 {
                     break;
@@ -86,76 +58,49 @@ namespace Bit.iOS.Extension
         public override void ViewDidAppear(bool animated)
         {
             base.ViewDidAppear(animated);
-
-            var authService = Resolver.Resolve<IAuthService>();
-            if(!authService.IsAuthenticated)
+            if(!IsAuthed())
             {
-                var alert = Dialogs.CreateAlert(null,
-                    "You must log into the main bitwarden app before you can use the extension.", AppResources.Ok, (a) =>
+                var alert = Dialogs.CreateAlert(null, AppResources.MustLogInMainApp, AppResources.Ok, (a) =>
                 {
-                    CompleteRequest(null);
+                    CompleteRequest(null, null);
                 });
                 PresentViewController(alert, true, null);
                 return;
             }
-
-            var lockService = Resolver.Resolve<ILockService>();
-            var lockType = lockService.GetLockType(false);
-            switch(lockType)
+            if(_context.ProviderType == Constants.UTTypeAppExtensionSetup)
             {
-                case App.Enums.LockType.Fingerprint:
-                    PerformSegue("lockFingerprintSegue", this);
-                    break;
-                case App.Enums.LockType.PIN:
-                    PerformSegue("lockPinSegue", this);
-                    break;
-                case App.Enums.LockType.Password:
-                    PerformSegue("lockPasswordSegue", this);
-                    break;
-                default:
-                    ContinueOn();
-                    break;
+                PerformSegue("setupSegue", this);
+                return;
+            }
+            if(IsLocked())
+            {
+                PerformSegue("lockPasswordSegue", this);
+            }
+            else
+            {
+                ContinueOn();
             }
         }
 
         public override void PrepareForSegue(UIStoryboardSegue segue, NSObject sender)
         {
-            var navController = segue.DestinationViewController as UINavigationController;
-            if(navController != null)
+            if(segue.DestinationViewController is UINavigationController navController)
             {
-                var listSiteController = navController.TopViewController as SiteListViewController;
-                var addSiteController = navController.TopViewController as SiteAddViewController;
-                var fingerprintViewController = navController.TopViewController as LockFingerprintViewController;
-                var pinViewController = navController.TopViewController as LockPinViewController;
-                var passwordViewController = navController.TopViewController as LockPasswordViewController;
-                var setupViewController = navController.TopViewController as SetupViewController;
-
-                if(listSiteController != null)
+                if(navController.TopViewController is LoginListViewController listLoginController)
                 {
-                    listSiteController.Context = _context;
-                    listSiteController.LoadingController = this;
+                    listLoginController.Context = _context;
+                    listLoginController.LoadingController = this;
                 }
-                else if(addSiteController != null)
+                else if(navController.TopViewController is LoginAddViewController addLoginController)
                 {
-                    addSiteController.Context = _context;
-                    addSiteController.LoadingController = this;
+                    addLoginController.Context = _context;
+                    addLoginController.LoadingController = this;
                 }
-                else if(fingerprintViewController != null)
+                else if(navController.TopViewController is LockPasswordViewController passwordViewController)
                 {
-                    fingerprintViewController.Context = _context;
-                    fingerprintViewController.LoadingController = this;
-                }
-                else if(pinViewController != null)
-                {
-                    pinViewController.Context = _context;
-                    pinViewController.LoadingController = this;
-                }
-                else if(passwordViewController != null)
-                {
-                    passwordViewController.Context = _context;
                     passwordViewController.LoadingController = this;
                 }
-                else if(setupViewController != null)
+                else if(navController.TopViewController is SetupViewController setupViewController)
                 {
                     setupViewController.Context = _context;
                     setupViewController.LoadingController = this;
@@ -166,20 +111,15 @@ namespace Bit.iOS.Extension
         public void DismissLockAndContinue()
         {
             Debug.WriteLine("BW Log, Dismissing lock controller.");
-            DismissViewController(false, () =>
-            {
-                ContinueOn();
-            });
+            DismissViewController(false, () => ContinueOn());
         }
 
         private void ContinueOn()
         {
-            Debug.WriteLine("BW Log, Segue to setup, site add or list.");
-            _settings.AddOrUpdateValue(App.Constants.LastActivityDate, DateTime.UtcNow);
-
+            Debug.WriteLine("BW Log, Segue to setup, login add or list.");
             if(_context.ProviderType == Constants.UTTypeAppExtensionSaveLoginAction)
             {
-                PerformSegue("newSiteSegue", this);
+                PerformSegue("newLoginSegue", this);
             }
             else if(_context.ProviderType == Constants.UTTypeAppExtensionSetup)
             {
@@ -187,17 +127,18 @@ namespace Bit.iOS.Extension
             }
             else
             {
-                PerformSegue("siteListSegue", this);
+                PerformSegue("loginListSegue", this);
             }
         }
 
-        public void CompleteUsernamePasswordRequest(string username, string password)
+        public void CompleteUsernamePasswordRequest(string id, string username, string password,
+            List<Tuple<string, string>> fields, string totp)
         {
             NSDictionary itemData = null;
             if(_context.ProviderType == UTType.PropertyList)
             {
-                var fillScript = new FillScript(_context.Details, username, password);
-                var scriptJson = JsonConvert.SerializeObject(fillScript, _jsonSettings);
+                var fillScript = new FillScript(_context.Details, username, password, fields);
+                var scriptJson = CoreHelpers.SerializeJson(fillScript, true);
                 var scriptDict = new NSDictionary(Constants.AppExtensionWebViewPageFillScript, scriptJson);
                 itemData = new NSDictionary(NSJavaScriptExtension.FinalizeArgumentKey, scriptDict);
             }
@@ -210,8 +151,8 @@ namespace Bit.iOS.Extension
             else if(_context.ProviderType == Constants.UTTypeAppExtensionFillBrowserAction
                 || _context.ProviderType == Constants.UTTypeAppExtensionFillWebViewAction)
             {
-                var fillScript = new FillScript(_context.Details, username, password);
-                var scriptJson = JsonConvert.SerializeObject(fillScript, _jsonSettings);
+                var fillScript = new FillScript(_context.Details, username, password, fields);
+                var scriptJson = CoreHelpers.SerializeJson(fillScript, true);
                 itemData = new NSDictionary(Constants.AppExtensionWebViewPageFillScript, scriptJson);
             }
             else if(_context.ProviderType == Constants.UTTypeAppExtensionSaveLoginAction)
@@ -227,73 +168,33 @@ namespace Bit.iOS.Extension
                     Constants.AppExtensionOldPasswordKey, password);
             }
 
-            CompleteRequest(itemData);
+            if(!string.IsNullOrWhiteSpace(totp))
+            {
+                UIPasteboard.General.String = totp;
+            }
+            CompleteRequest(id, itemData);
         }
 
-        public void CompleteRequest(NSDictionary itemData)
+        public void CompleteRequest(string id, NSDictionary itemData)
         {
             Debug.WriteLine("BW LOG, itemData: " + itemData);
-
             var resultsProvider = new NSItemProvider(itemData, UTType.PropertyList);
             var resultsItem = new NSExtensionItem { Attachments = new NSItemProvider[] { resultsProvider } };
             var returningItems = new NSExtensionItem[] { resultsItem };
-
-            if(itemData != null)
+            NSRunLoop.Main.BeginInvokeOnMainThread(async () =>
             {
-                _settings.AddOrUpdateValue(App.Constants.LastActivityDate, DateTime.UtcNow);
-                _googleAnalyticsService.TrackExtensionEvent("AutoFilled", _context.ProviderType);
-            }
-            else
-            {
-                _googleAnalyticsService.TrackExtensionEvent("Closed", _context.ProviderType);
-            }
-
-            _googleAnalyticsService.Dispatch(() =>
-            {
-                NSRunLoop.Main.BeginInvokeOnMainThread(() =>
+                if(!string.IsNullOrWhiteSpace(id) && itemData != null)
                 {
-                    Resolver.ResetResolver();
-                    ExtensionContext.CompleteRequest(returningItems, null);
-                });
+                    var eventService = ServiceContainer.Resolve<IEventService>("eventService");
+                    await eventService.CollectAsync(Bit.Core.Enums.EventType.Cipher_ClientAutofilled, id);
+                }
+                ServiceContainer.Reset();
+                ExtensionContext?.CompleteRequest(returningItems, null);
             });
         }
 
-        private void SetIoc()
-        {
-            var container = new UnityContainer();
-
-            container
-                // Services
-                .RegisterType<IDatabaseService, DatabaseService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISqlService, SqlService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISecureStorageService, KeyChainStorageService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ICryptoService, CryptoService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IKeyDerivationService, CommonCryptoKeyDerivationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthService, AuthService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderService, FolderService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteService, SiteService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISyncService, SyncService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IPasswordGenerationService, PasswordGenerationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAppIdService, AppIdService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ILockService, LockService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IGoogleAnalyticsService, GoogleAnalyticsService>(new ContainerControlledLifetimeManager())
-                // Repositories
-                .RegisterType<IFolderRepository, FolderRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderApiRepository, FolderApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteRepository, SiteRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteApiRepository, SiteApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthApiRepository, AuthApiRepository>(new ContainerControlledLifetimeManager())
-                // Other
-                .RegisterInstance(CrossConnectivity.Current, new ContainerControlledLifetimeManager())
-                .RegisterInstance(CrossFingerprint.Current, new ContainerControlledLifetimeManager());
-
-            ISettings settings = new Settings("group.com.8bit.bitwarden");
-            container.RegisterInstance(settings, new ContainerControlledLifetimeManager());
-
-            Resolver.ResetResolver(new UnityResolver(container));
-        }
-
-        private bool ProcessItemProvider(NSItemProvider itemProvider, string type, Action<NSDictionary> action)
+        private bool ProcessItemProvider(NSItemProvider itemProvider, string type, Action<NSDictionary> dictAction,
+            Action<NSUrl> urlAction = null)
         {
             if(!itemProvider.HasItemConformingTo(type))
             {
@@ -308,14 +209,24 @@ namespace Bit.iOS.Extension
                 }
 
                 _context.ProviderType = type;
-                var dict = list as NSDictionary;
-                action(dict);
-
-                _googleAnalyticsService.TrackExtensionEvent("ProcessItemProvider", type);
+                if(list is NSDictionary dict && dictAction != null)
+                {
+                    dictAction(dict);
+                }
+                else if(list is NSUrl && urlAction != null)
+                {
+                    var url = list as NSUrl;
+                    urlAction(url);
+                }
+                else
+                {
+                    throw new Exception("Cannot parse list for action. List is " +
+                        (list?.GetType().ToString() ?? "null"));
+                }
 
                 Debug.WriteLine("BW LOG, ProviderType: " + _context.ProviderType);
-                Debug.WriteLine("BW LOG, Url: " + _context.Url);
-                Debug.WriteLine("BW LOG, Title: " + _context.SiteTitle);
+                Debug.WriteLine("BW LOG, Url: " + _context.UrlString);
+                Debug.WriteLine("BW LOG, Title: " + _context.LoginTitle);
                 Debug.WriteLine("BW LOG, Username: " + _context.Username);
                 Debug.WriteLine("BW LOG, Password: " + _context.Password);
                 Debug.WriteLine("BW LOG, Old Password: " + _context.OldPassword);
@@ -337,15 +248,14 @@ namespace Bit.iOS.Extension
 
         private bool ProcessWebUrlProvider(NSItemProvider itemProvider)
         {
-            return ProcessItemProvider(itemProvider, UTType.PropertyList, (dict) =>
+            return ProcessItemProvider(itemProvider, UTType.PropertyList, dict =>
             {
                 var result = dict[NSJavaScriptExtension.PreprocessingResultsKey];
                 if(result == null)
                 {
                     return;
                 }
-
-                _context.Url = new Uri(result.ValueForKey(new NSString(Constants.AppExtensionUrlStringKey)) as NSString);
+                _context.UrlString = result.ValueForKey(new NSString(Constants.AppExtensionUrlStringKey)) as NSString;
                 var jsonStr = result.ValueForKey(new NSString(Constants.AppExtensionWebViewPageDetails)) as NSString;
                 _context.Details = DeserializeString<PageDetails>(jsonStr);
             });
@@ -353,36 +263,40 @@ namespace Bit.iOS.Extension
 
         private bool ProcessFindLoginProvider(NSItemProvider itemProvider)
         {
-            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionFindLoginAction, (dict) =>
+            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionFindLoginAction, dict =>
             {
                 var version = dict[Constants.AppExtensionVersionNumberKey] as NSNumber;
                 var url = dict[Constants.AppExtensionUrlStringKey] as NSString;
-
                 if(url != null)
                 {
-                    _context.Url = new Uri(url);
+                    _context.UrlString = url;
                 }
             });
         }
 
         private bool ProcessFindLoginBrowserProvider(NSItemProvider itemProvider, string action)
         {
-            return ProcessItemProvider(itemProvider, action, (dict) =>
+            return ProcessItemProvider(itemProvider, action, dict =>
             {
                 var version = dict[Constants.AppExtensionVersionNumberKey] as NSNumber;
                 var url = dict[Constants.AppExtensionUrlStringKey] as NSString;
                 if(url != null)
                 {
-                    _context.Url = new Uri(url);
+                    _context.UrlString = url;
                 }
-
                 _context.Details = DeserializeDictionary<PageDetails>(dict[Constants.AppExtensionWebViewPageDetails] as NSDictionary);
+            }, url =>
+            {
+                if(url != null)
+                {
+                    _context.UrlString = url.AbsoluteString;
+                }
             });
         }
 
         private bool ProcessSaveLoginProvider(NSItemProvider itemProvider)
         {
-            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionSaveLoginAction, (dict) =>
+            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionSaveLoginAction, dict =>
             {
                 var version = dict[Constants.AppExtensionVersionNumberKey] as NSNumber;
                 var url = dict[Constants.AppExtensionUrlStringKey] as NSString;
@@ -392,14 +306,11 @@ namespace Bit.iOS.Extension
                 var password = dict[Constants.AppExtensionPasswordKey] as NSString;
                 var notes = dict[Constants.AppExtensionNotesKey] as NSString;
                 var fields = dict[Constants.AppExtensionFieldsKey] as NSDictionary;
-
                 if(url != null)
                 {
-                    _context.Url = new Uri(url);
+                    _context.UrlString = url;
                 }
-
-                _context.Url = new Uri(url);
-                _context.SiteTitle = title;
+                _context.LoginTitle = title;
                 _context.Username = username;
                 _context.Password = password;
                 _context.Notes = notes;
@@ -409,7 +320,7 @@ namespace Bit.iOS.Extension
 
         private bool ProcessChangePasswordProvider(NSItemProvider itemProvider)
         {
-            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionChangePasswordAction, (dict) =>
+            return ProcessItemProvider(itemProvider, Constants.UTTypeAppExtensionChangePasswordAction, dict =>
             {
                 var version = dict[Constants.AppExtensionVersionNumberKey] as NSNumber;
                 var url = dict[Constants.AppExtensionUrlStringKey] as NSString;
@@ -420,13 +331,11 @@ namespace Bit.iOS.Extension
                 var oldPassword = dict[Constants.AppExtensionOldPasswordKey] as NSString;
                 var notes = dict[Constants.AppExtensionNotesKey] as NSString;
                 var fields = dict[Constants.AppExtensionFieldsKey] as NSDictionary;
-
                 if(url != null)
                 {
-                    _context.Url = new Uri(url);
+                    _context.UrlString = url;
                 }
-
-                _context.SiteTitle = title;
+                _context.LoginTitle = title;
                 _context.Username = username;
                 _context.Password = password;
                 _context.OldPassword = oldPassword;
@@ -442,7 +351,6 @@ namespace Bit.iOS.Extension
                 _context.ProviderType = Constants.UTTypeAppExtensionSetup;
                 return true;
             }
-
             return false;
         }
 
@@ -450,15 +358,14 @@ namespace Bit.iOS.Extension
         {
             if(dict != null)
             {
-                NSError jsonError;
-                var jsonData = NSJsonSerialization.Serialize(dict, NSJsonWritingOptions.PrettyPrinted, out jsonError);
+                var jsonData = NSJsonSerialization.Serialize(
+                    dict, NSJsonWritingOptions.PrettyPrinted, out NSError jsonError);
                 if(jsonData != null)
                 {
                     var jsonString = new NSString(jsonData, NSStringEncoding.UTF8);
                     return DeserializeString<T>(jsonString);
                 }
             }
-
             return default(T);
         }
 
@@ -466,11 +373,39 @@ namespace Bit.iOS.Extension
         {
             if(jsonString != null)
             {
-                var convertedObject = JsonConvert.DeserializeObject<T>(jsonString.ToString());
+                var convertedObject = CoreHelpers.DeserializeJson<T>(jsonString.ToString());
                 return convertedObject;
             }
-
             return default(T);
+        }
+
+        private void InitApp()
+        {
+            if(ServiceContainer.RegisteredServices.Count > 0)
+            {
+                ServiceContainer.Reset();
+            }
+            iOSCoreHelpers.RegisterLocalServices();
+            ServiceContainer.Init();
+            if(!_initedHockeyApp)
+            {
+                iOSCoreHelpers.RegisterHockeyApp();
+                _initedHockeyApp = true;
+            }
+            iOSCoreHelpers.Bootstrap();
+            iOSCoreHelpers.AppearanceAdjustments();
+        }
+
+        private bool IsLocked()
+        {
+            var lockService = ServiceContainer.Resolve<ILockService>("lockService");
+            return lockService.IsLockedAsync().GetAwaiter().GetResult();
+        }
+
+        private bool IsAuthed()
+        {
+            var userService = ServiceContainer.Resolve<IUserService>("userService");
+            return userService.IsAuthenticatedAsync().GetAwaiter().GetResult();
         }
     }
 }

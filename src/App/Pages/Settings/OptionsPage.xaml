@@ -1,0 +1,187 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<pages:BaseContentPage 
+    xmlns="http://xamarin.com/schemas/2014/forms"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    x:Class="Bit.App.Pages.OptionsPage"
+    xmlns:pages="clr-namespace:Bit.App.Pages"
+    xmlns:u="clr-namespace:Bit.App.Utilities"
+    x:DataType="pages:OptionsPageViewModel"
+    Title="{Binding PageTitle}">
+
+    <ContentPage.BindingContext>
+        <pages:OptionsPageViewModel />
+    </ContentPage.BindingContext>
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Text="{u:I18n Close}" Clicked="Close_Clicked" Order="Primary" Priority="-1" />
+    </ContentPage.ToolbarItems>
+
+    <ScrollView Padding="0, 0, 0, 20">
+        <StackLayout Padding="0" Spacing="20">
+            <StackLayout StyleClass="box">
+                <StackLayout StyleClass="box-row, box-row-input, box-row-input-options-platform">
+                    <Label
+                        Text="{u:I18n Theme}"
+                        StyleClass="box-label" />
+                    <Picker
+                        x:Name="_themePicker"
+                        ItemsSource="{Binding ThemeOptions, Mode=OneTime}"
+                        SelectedIndex="{Binding ThemeSelectedIndex}"
+                        StyleClass="box-value" />
+                </StackLayout>
+                <Label
+                    StyleClass="box-footer-label"
+                    Text="{u:I18n ThemeDescription}"
+                    x:Name="_themeDescriptionLabel" />
+            </StackLayout>
+            <StackLayout StyleClass="box">
+                <StackLayout StyleClass="box-row, box-row-input, box-row-input-options-platform">
+                    <Label
+                        Text="{u:I18n DefaultUriMatchDetection}"
+                        StyleClass="box-label" />
+                    <Picker
+                        x:Name="_uriMatchPicker"
+                        ItemsSource="{Binding UriMatchOptions, Mode=OneTime}"
+                        SelectedIndex="{Binding UriMatchSelectedIndex}"
+                        StyleClass="box-value" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n DefaultUriMatchDetectionDescription}"
+                    StyleClass="box-footer-label" />
+            </StackLayout>
+            <StackLayout StyleClass="box">
+                <StackLayout StyleClass="box-row, box-row-input, box-row-input-options-platform">
+                    <Label
+                        Text="{u:I18n ClearClipboard}"
+                        StyleClass="box-label" />
+                    <Picker
+                        x:Name="_clearClipboardPicker"
+                        ItemsSource="{Binding ClearClipboardOptions, Mode=OneTime}"
+                        SelectedIndex="{Binding ClearClipboardSelectedIndex}"
+                        StyleClass="box-value" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n ClearClipboardDescription}"
+                    StyleClass="box-footer-label" />
+            </StackLayout>
+            <StackLayout StyleClass="box">
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n DisableAutoTotpCopy}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding DisableAutoTotpCopy}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n DisableAutoTotpCopyDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+            <StackLayout StyleClass="box">
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n DisableWebsiteIcons}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding DisableFavicon}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n DisableWebsiteIconsDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+            <StackLayout StyleClass="box" IsVisible="{Binding ShowAndroidAutofillSettings}">
+                <StackLayout StyleClass="box-row-header">
+                    <Label Text="{u:I18n AutofillService, Header=True}"
+                            StyleClass="box-header, box-header-platform" />
+                </StackLayout>
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n DisableSavePrompt}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding AutofillDisableSavePrompt}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n DisableSavePromptDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+            <StackLayout StyleClass="box" IsVisible="{Binding ShowAndroidAutofillSettings}">
+                <StackLayout StyleClass="box-row, box-row-input">
+                    <Label
+                        Text="{u:I18n BlacklistedUris}"
+                        StyleClass="box-label" />
+                    <Editor
+                        x:Name="_blacklistedUrisEditor"
+                        Text="{Binding AutofillBlacklistedUris}"
+                        StyleClass="box-value"
+                        AutoSize="TextChanges"
+                        IsSpellCheckEnabled="False"
+                        IsTextPredictionEnabled="False"
+                        Keyboard="Url"
+                        Unfocused="BlacklistedUrisEditor_Unfocused" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n BlacklistedUrisDescription}"
+                    StyleClass="box-footer-label" />
+            </StackLayout>
+            <StackLayout StyleClass="box" IsVisible="{Binding ShowAndroidAccessibilitySettings}">
+                <StackLayout StyleClass="box-row-header">
+                    <Label Text="{u:I18n AutofillAccessibilityService, Header=True}"
+                            StyleClass="box-header, box-header-platform" />
+                </StackLayout>
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n AutofillAlways}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding AutofillAlwaysScan}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n AutofillAlwaysDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+            <StackLayout StyleClass="box" IsVisible="{Binding ShowAndroidAccessibilitySettings}">
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n AutofillPersistNotification}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding AutofillPersistNotification}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n AutofillPersistNotificationDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+            <StackLayout StyleClass="box" IsVisible="{Binding ShowAndroidAccessibilitySettings}">
+                <StackLayout StyleClass="box-row, box-row-switch">
+                    <Label
+                        Text="{u:I18n AutofillPasswordField}"
+                        StyleClass="box-label, box-label-regular"
+                        HorizontalOptions="StartAndExpand" />
+                    <Switch
+                        IsToggled="{Binding AutofillPasswordField}"
+                        StyleClass="box-value"
+                        HorizontalOptions="End" />
+                </StackLayout>
+                <Label
+                    Text="{u:I18n AutofillPasswordFieldDescription}"
+                    StyleClass="box-footer-label, box-footer-label-switch" />
+            </StackLayout>
+        </StackLayout>
+    </ScrollView>
+
+</pages:BaseContentPage>

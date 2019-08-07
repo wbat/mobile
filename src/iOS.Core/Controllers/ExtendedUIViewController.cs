@@ -1,7 +1,6 @@
+using Bit.iOS.Core.Utilities;
 using System;
 using UIKit;
-using Bit.App.Abstractions;
-using XLabs.Ioc;
 
 namespace Bit.iOS.Core.Controllers
 {
@@ -11,11 +10,30 @@ namespace Bit.iOS.Core.Controllers
             : base(handle)
         { }
 
-        public override void ViewDidAppear(bool animated)
+        public override void ViewWillAppear(bool animated)
         {
-            var googleAnalyticsService = Resolver.Resolve<IGoogleAnalyticsService>();
-            googleAnalyticsService.TrackPage(GetType().Name);
-            base.ViewDidAppear(animated);
+            UINavigationBar.Appearance.ShadowImage = new UIImage();
+            UINavigationBar.Appearance.SetBackgroundImage(new UIImage(), UIBarMetrics.Default);
+            base.ViewWillAppear(animated);
+        }
+
+        public override void ViewDidLoad()
+        {
+            base.ViewDidLoad();
+            if(View != null)
+            {
+                View.BackgroundColor = ThemeHelpers.BackgroundColor;
+            }
+            if(NavigationController?.NavigationBar != null)
+            {
+                NavigationController.NavigationBar.BarTintColor = ThemeHelpers.NavBarBackgroundColor;
+                NavigationController.NavigationBar.BackgroundColor = ThemeHelpers.NavBarBackgroundColor;
+                NavigationController.NavigationBar.TintColor = ThemeHelpers.NavBarTextColor;
+                NavigationController.NavigationBar.TitleTextAttributes = new UIStringAttributes
+                {
+                    ForegroundColor = ThemeHelpers.NavBarTextColor
+                };
+            }
         }
     }
 }

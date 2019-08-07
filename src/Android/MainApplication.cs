@@ -1,228 +1,158 @@
-using System;
-using Acr.UserDialogs;
+﻿using System;
+using System.IO;
+using System.Threading.Tasks;
 using Android.App;
 using Android.Content;
 using Android.OS;
 using Android.Runtime;
-using Bit.Android.Services;
 using Bit.App.Abstractions;
-using Bit.App.Repositories;
 using Bit.App.Services;
-using Microsoft.Practices.Unity;
-using Plugin.Connectivity;
+using Bit.Core;
+using Bit.Core.Abstractions;
+using Bit.Core.Services;
+using Bit.Core.Utilities;
+using Bit.Droid.Services;
+using Bit.Droid.Utilities;
 using Plugin.CurrentActivity;
 using Plugin.Fingerprint;
-using Plugin.Settings;
-using PushNotification.Plugin;
-using PushNotification.Plugin.Abstractions;
-using XLabs.Ioc;
-using XLabs.Ioc.Unity;
-using System.Threading.Tasks;
-using Plugin.Settings.Abstractions;
+using Xamarin.Android.Net;
+#if !FDROID
+using Android.Gms.Security;
+#endif
 
-namespace Bit.Android
+namespace Bit.Droid
 {
 #if DEBUG
     [Application(Debuggable = true)]
 #else
     [Application(Debuggable = false)]
 #endif
-    public class MainApplication : Application, Application.IActivityLifecycleCallbacks
+    [Register("com.x8bit.bitwarden.MainApplication")]
+#if FDROID
+    public class MainApplication : Application
+#else
+    public class MainApplication : Application, ProviderInstaller.IProviderInstallListener
+#endif
     {
-        private const string FirstLaunchKey = "firstLaunch";
-        private const string LastVersionCodeKey = "lastVersionCode";
-
-        public static Context AppContext;
-
         public MainApplication(IntPtr handle, JniHandleOwnership transer)
           : base(handle, transer)
         {
-            if(!Resolver.IsSet)
+            if(ServiceContainer.RegisteredServices.Count == 0)
             {
-                SetIoc();
+                RegisterLocalServices();
+                ServiceContainer.Init();
+                if(App.Migration.MigrationHelpers.NeedsMigration())
+                {
+                    var task = App.Migration.MigrationHelpers.PerformMigrationAsync();
+                    Task.Delay(2000).Wait();
+                }
             }
+#if !FDROID
+            if(Build.VERSION.SdkInt <= BuildVersionCodes.Kitkat)
+            {
+                ProviderInstaller.InstallIfNeededAsync(ApplicationContext, this);
+            }
+#endif
         }
 
         public override void OnCreate()
         {
             base.OnCreate();
-
-            // workaround for app compat bug
-            // ref https://forums.xamarin.com/discussion/62414/app-resuming-results-in-crash-with-formsappcompatactivity
-            Task.Delay(10).Wait();
-
-            RegisterActivityLifecycleCallbacks(this);
-            AppContext = ApplicationContext;
-            StartPushService();
-            HandlePushReregistration();
+            Bootstrap();
+            CrossCurrentActivity.Current.Init(this);
         }
 
-        private void HandlePushReregistration()
+        public void OnProviderInstallFailed(int errorCode, Intent recoveryIntent)
         {
-            var pushNotification = Resolver.Resolve<IPushNotification>();
-            var settings = Resolver.Resolve<ISettings>();
+        }
 
-            // Reregister for push token based on certain conditions
-            // ref https://github.com/rdelrosario/xamarin-plugins/issues/65
+        public void OnProviderInstalled()
+        {
+        }
 
-            var reregister = false;
-
-            // 1. First time starting the app after a new install
-            if(settings.GetValueOrDefault(FirstLaunchKey, true))
+        private void RegisterLocalServices()
+        {
+            ServiceContainer.Register<ILogService>("logService", new AndroidLogService());
+            ServiceContainer.Register("settingsShim", new App.Migration.SettingsShim());
+            if(App.Migration.MigrationHelpers.NeedsMigration())
             {
-                settings.AddOrUpdateValue(FirstLaunchKey, false);
-                reregister = true;
+                ServiceContainer.Register<App.Migration.Abstractions.IOldSecureStorageService>(
+                    "oldSecureStorageService", new Migration.AndroidKeyStoreStorageService());
             }
 
-            // 2. App version changed (installed update)
-            var versionCode = Context.ApplicationContext.PackageManager.GetPackageInfo(Context.PackageName, 0).VersionCode;
-            if(settings.GetValueOrDefault(LastVersionCodeKey, -1) != versionCode)
+            Refractored.FabControl.Droid.FloatingActionButtonViewRenderer.Init();
+            // Note: This might cause a race condition. Investigate more.
+            Task.Run(() =>
             {
-                settings.AddOrUpdateValue(LastVersionCodeKey, versionCode);
-                reregister = true;
-            }
-
-            // 3. In debug mode
-            if(InDebugMode())
-            {
-                reregister = true;
-            }
-
-            // 4. Doesn't have a push token currently
-            if(string.IsNullOrWhiteSpace(pushNotification.Token))
-            {
-                reregister = true;
-            }
-
-            if(reregister)
-            {
-                pushNotification.Unregister();
-                if(Resolver.Resolve<IAuthService>().IsAuthenticated)
+                FFImageLoading.Forms.Platform.CachedImageRenderer.Init(true);
+                FFImageLoading.ImageService.Instance.Initialize(new FFImageLoading.Config.Configuration
                 {
-                    pushNotification.Register();
-                }
-            }
-        }
+                    FadeAnimationEnabled = false,
+                    FadeAnimationForCachedImages = false
+                });
+                ZXing.Net.Mobile.Forms.Android.Platform.Init();
+            });
+            CrossFingerprint.SetCurrentActivityResolver(() => CrossCurrentActivity.Current.Activity);
+            CrossFingerprint.SetDialogFragmentType<CustomFingerprintDialogFragment>();
 
-        private bool InDebugMode()
-        {
-#if DEBUG
-            return true;
+            var preferencesStorage = new PreferencesStorageService(null);
+            var documentsPath = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Personal);
+            var liteDbStorage = new LiteDbStorageService(Path.Combine(documentsPath, "bitwarden.db"));
+            liteDbStorage.InitAsync();
+            var localizeService = new LocalizeService();
+            var broadcasterService = new BroadcasterService();
+            var messagingService = new MobileBroadcasterMessagingService(broadcasterService);
+            var i18nService = new MobileI18nService(localizeService.GetCurrentCultureInfo());
+            var secureStorageService = new SecureStorageService();
+            var cryptoPrimitiveService = new CryptoPrimitiveService();
+            var mobileStorageService = new MobileStorageService(preferencesStorage, liteDbStorage);
+            var deviceActionService = new DeviceActionService(mobileStorageService, messagingService,
+                broadcasterService, () => ServiceContainer.Resolve<IEventService>("eventService"));
+            var platformUtilsService = new MobilePlatformUtilsService(deviceActionService, messagingService,
+                broadcasterService);
+
+            ServiceContainer.Register<IBroadcasterService>("broadcasterService", broadcasterService);
+            ServiceContainer.Register<IMessagingService>("messagingService", messagingService);
+            ServiceContainer.Register<ILocalizeService>("localizeService", localizeService);
+            ServiceContainer.Register<II18nService>("i18nService", i18nService);
+            ServiceContainer.Register<ICryptoPrimitiveService>("cryptoPrimitiveService", cryptoPrimitiveService);
+            ServiceContainer.Register<IStorageService>("storageService", mobileStorageService);
+            ServiceContainer.Register<IStorageService>("secureStorageService", secureStorageService);
+            ServiceContainer.Register<IDeviceActionService>("deviceActionService", deviceActionService);
+            ServiceContainer.Register<IPlatformUtilsService>("platformUtilsService", platformUtilsService);
+
+            // Push
+#if FDROID
+            ServiceContainer.Register<IPushNotificationListenerService>(
+                "pushNotificationListenerService", new NoopPushNotificationListenerService());
+            ServiceContainer.Register<IPushNotificationService>(
+                "pushNotificationService", new NoopPushNotificationService());
 #else
-            return false;
+            var notificationListenerService = new PushNotificationListenerService();
+            ServiceContainer.Register<IPushNotificationListenerService>(
+                "pushNotificationListenerService", notificationListenerService);
+            var androidPushNotificationService = new AndroidPushNotificationService(
+                mobileStorageService, notificationListenerService);
+            ServiceContainer.Register<IPushNotificationService>(
+                "pushNotificationService", androidPushNotificationService);
 #endif
         }
 
-        public override void OnTerminate()
+        private void Bootstrap()
         {
-            base.OnTerminate();
-            UnregisterActivityLifecycleCallbacks(this);
+            (ServiceContainer.Resolve<II18nService>("i18nService") as MobileI18nService).Init();
+            ServiceContainer.Resolve<IAuthService>("authService").Init();
+            // Note: This is not awaited
+            var bootstrapTask = BootstrapAsync();
         }
 
-        public void OnActivityCreated(Activity activity, Bundle savedInstanceState)
+        private async Task BootstrapAsync()
         {
-            CrossCurrentActivity.Current.Activity = activity;
-        }
-
-        public void OnActivityDestroyed(Activity activity)
-        {
-        }
-
-        public void OnActivityPaused(Activity activity)
-        {
-        }
-
-        public void OnActivityResumed(Activity activity)
-        {
-            CrossCurrentActivity.Current.Activity = activity;
-        }
-
-        public void OnActivitySaveInstanceState(Activity activity, Bundle outState)
-        {
-        }
-
-        public void OnActivityStarted(Activity activity)
-        {
-            CrossCurrentActivity.Current.Activity = activity;
-        }
-
-        public void OnActivityStopped(Activity activity)
-        {
-        }
-
-        public static void StartPushService()
-        {
-            AppContext.StartService(new Intent(AppContext, typeof(PushNotificationService)));
-            if(Build.VERSION.SdkInt >= BuildVersionCodes.Kitkat)
-            {
-                PendingIntent pintent = PendingIntent.GetService(AppContext, 0, new Intent(AppContext,
-                    typeof(PushNotificationService)), 0);
-                AlarmManager alarm = (AlarmManager)AppContext.GetSystemService(AlarmService);
-                alarm.Cancel(pintent);
-            }
-        }
-
-        public static void StopPushService()
-        {
-            AppContext.StopService(new Intent(AppContext, typeof(PushNotificationService)));
-            if(Build.VERSION.SdkInt >= BuildVersionCodes.Kitkat)
-            {
-                PendingIntent pintent = PendingIntent.GetService(AppContext, 0, new Intent(AppContext,
-                    typeof(PushNotificationService)), 0);
-                AlarmManager alarm = (AlarmManager)AppContext.GetSystemService(AlarmService);
-                alarm.Cancel(pintent);
-            }
-        }
-
-        private void SetIoc()
-        {
-            UserDialogs.Init(this);
-
-            var container = new UnityContainer();
-
-            container
-                // Android Stuff
-                .RegisterInstance(ApplicationContext)
-                .RegisterInstance<Application>(this)
-                // Services
-                .RegisterType<IDatabaseService, DatabaseService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISqlService, SqlService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISecureStorageService, KeyStoreStorageService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ICryptoService, CryptoService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IKeyDerivationService, BouncyCastleKeyDerivationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthService, AuthService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderService, FolderService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteService, SiteService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISyncService, SyncService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IClipboardService, ClipboardService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IPushNotificationListener, PushNotificationListener>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAppIdService, AppIdService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IPasswordGenerationService, PasswordGenerationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IReflectionService, ReflectionService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ILockService, LockService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAppInfoService, AppInfoService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IGoogleAnalyticsService, GoogleAnalyticsService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IDeviceInfoService, DeviceInfoService>(new ContainerControlledLifetimeManager())
-                // Repositories
-                .RegisterType<IFolderRepository, FolderRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderApiRepository, FolderApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteRepository, SiteRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteApiRepository, SiteApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthApiRepository, AuthApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IDeviceApiRepository, DeviceApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAccountsApiRepository, AccountsApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ICipherApiRepository, CipherApiRepository>(new ContainerControlledLifetimeManager())
-                // Other
-                .RegisterInstance(CrossSettings.Current, new ContainerControlledLifetimeManager())
-                .RegisterInstance(CrossConnectivity.Current, new ContainerControlledLifetimeManager())
-                .RegisterInstance(UserDialogs.Instance, new ContainerControlledLifetimeManager())
-                .RegisterInstance(CrossFingerprint.Current, new ContainerControlledLifetimeManager());
-
-            CrossPushNotification.Initialize(container.Resolve<IPushNotificationListener>(), "962181367620");
-            container.RegisterInstance(CrossPushNotification.Current, new ContainerControlledLifetimeManager());
-
-            Resolver.SetResolver(new UnityResolver(container));
-            CrossFingerprint.SetCurrentActivityResolver(() => CrossCurrentActivity.Current.Activity);
+            var disableFavicon = await ServiceContainer.Resolve<IStorageService>("storageService")
+                .GetAsync<bool?>(Constants.DisableFaviconKey);
+            await ServiceContainer.Resolve<IStateService>("stateService").SaveAsync(
+                Constants.DisableFaviconKey, disableFavicon);
+            await ServiceContainer.Resolve<IEnvironmentService>("environmentService").SetUrlsFromStorageAsync();
         }
     }
 }

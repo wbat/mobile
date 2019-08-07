@@ -1,113 +1,178 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using XLabs.Ioc;
-using XLabs.Ioc.Unity;
-
+using System.Threading.Tasks;
+using AuthenticationServices;
+using Bit.App.Abstractions;
+using Bit.App.Pages;
+using Bit.App.Resources;
+using Bit.App.Services;
+using Bit.App.Utilities;
+using Bit.Core;
+using Bit.Core.Abstractions;
+using Bit.Core.Services;
+using Bit.Core.Utilities;
+using Bit.iOS.Core.Utilities;
+using Bit.iOS.Services;
+using CoreNFC;
 using Foundation;
 using UIKit;
-using Bit.App.Abstractions;
-using Bit.App.Services;
-using Microsoft.Practices.Unity;
-using Bit.iOS.Services;
-using Plugin.Connectivity;
-using Acr.UserDialogs;
-using Bit.App.Repositories;
-using Plugin.Fingerprint;
-using Plugin.Fingerprint.Abstractions;
-using Plugin.Settings.Abstractions;
-using System.Diagnostics;
 using Xamarin.Forms;
-using Bit.iOS.Core.Services;
-using PushNotification.Plugin;
-using Plugin.Connectivity.Abstractions;
-using Bit.App.Pages;
-using HockeyApp.iOS;
-using Bit.iOS.Core;
-using Google.Analytics;
+using Xamarin.Forms.Platform.iOS;
 
 namespace Bit.iOS
 {
     [Register("AppDelegate")]
-    public partial class AppDelegate : global::Xamarin.Forms.Platform.iOS.FormsApplicationDelegate
+    public partial class AppDelegate : FormsApplicationDelegate
     {
-        private GaiCompletionHandler _dispatchHandler = null;
+        private NFCNdefReaderSession _nfcSession = null;
+        private iOSPushNotificationHandler _pushHandler = null;
+        private NFCReaderDelegate _nfcDelegate = null;
+        private NSTimer _clipboardTimer = null;
+        private nint _clipboardBackgroundTaskId;
+        private NSTimer _lockTimer = null;
+        private nint _lockBackgroundTaskId;
+        private NSTimer _eventTimer = null;
+        private nint _eventBackgroundTaskId;
 
-        public ISettings Settings { get; set; }
+        private IDeviceActionService _deviceActionService;
+        private IMessagingService _messagingService;
+        private IBroadcasterService _broadcasterService;
+        private IStorageService _storageService;
+        private ILockService _lockService;
+        private IEventService _eventService;
 
         public override bool FinishedLaunching(UIApplication app, NSDictionary options)
         {
-            global::Xamarin.Forms.Forms.Init();
-
-            if(!Resolver.IsSet)
+            Forms.Init();
+            InitApp();
+            if(App.Migration.MigrationHelpers.NeedsMigration())
             {
-                SetIoc();
+                var task = App.Migration.MigrationHelpers.PerformMigrationAsync();
+                Task.Delay(5000).Wait();
             }
 
-            var appIdService = Resolver.Resolve<IAppIdService>();
-            var crashManagerDelegate = new HockeyAppCrashManagerDelegate(
-                appIdService, Resolver.Resolve<IAuthService>());
-            var manager = BITHockeyManager.SharedHockeyManager;
-            manager.Configure("51f96ae568ba45f699a18ad9f63046c3", crashManagerDelegate);
-            manager.CrashManager.CrashManagerStatus = BITCrashManagerStatus.AutoSend;
-            manager.UserId = appIdService.AppId;
-            manager.StartManager();
-            manager.Authenticator.AuthenticateInstallation();
-            manager.DisableMetricsManager = manager.DisableFeedbackManager = manager.DisableUpdateManager = true;
+            _deviceActionService = ServiceContainer.Resolve<IDeviceActionService>("deviceActionService");
+            _messagingService = ServiceContainer.Resolve<IMessagingService>("messagingService");
+            _broadcasterService = ServiceContainer.Resolve<IBroadcasterService>("broadcasterService");
+            _storageService = ServiceContainer.Resolve<IStorageService>("storageService");
+            _lockService = ServiceContainer.Resolve<ILockService>("lockService");
+            _eventService = ServiceContainer.Resolve<IEventService>("eventService");
 
-            LoadApplication(new App.App(
-                Resolver.Resolve<IAuthService>(),
-                Resolver.Resolve<IConnectivity>(),
-                Resolver.Resolve<IUserDialogs>(),
-                Resolver.Resolve<IDatabaseService>(),
-                Resolver.Resolve<ISyncService>(),
-                Resolver.Resolve<IFingerprint>(),
-                Resolver.Resolve<ISettings>(),
-                Resolver.Resolve<ILockService>(),
-                Resolver.Resolve<IGoogleAnalyticsService>()));
+            LoadApplication(new App.App(null));
+            iOSCoreHelpers.AppearanceAdjustments();
+            ZXing.Net.Mobile.Forms.iOS.Platform.Init();
 
-            // Appearance stuff
-
-            var primaryColor = new UIColor(red: 0.24f, green: 0.55f, blue: 0.74f, alpha: 1.0f);
-            var grayLight = new UIColor(red: 0.47f, green: 0.47f, blue: 0.47f, alpha: 1.0f);
-
-            UINavigationBar.Appearance.ShadowImage = new UIImage();
-            UINavigationBar.Appearance.SetBackgroundImage(new UIImage(), UIBarMetrics.Default);
-            UIBarButtonItem.AppearanceWhenContainedIn(new Type[] { typeof(UISearchBar) }).TintColor = primaryColor;
-            UIButton.AppearanceWhenContainedIn(new Type[] { typeof(UISearchBar) }).SetTitleColor(primaryColor, UIControlState.Normal);
-            UIButton.AppearanceWhenContainedIn(new Type[] { typeof(UISearchBar) }).TintColor = primaryColor;
-            UIStepper.Appearance.TintColor = grayLight;
-            UISlider.Appearance.TintColor = primaryColor;
-
-            MessagingCenter.Subscribe<Xamarin.Forms.Application, ToolsExtensionPage>(Xamarin.Forms.Application.Current, "ShowAppExtension", (sender, page) =>
+            _broadcasterService.Subscribe(nameof(AppDelegate), async (message) =>
             {
-                var itemProvider = new NSItemProvider(new NSDictionary(), iOS.Core.Constants.UTTypeAppExtensionSetup);
-                var extensionItem = new NSExtensionItem();
-                extensionItem.Attachments = new NSItemProvider[] { itemProvider };
-                var activityViewController = new UIActivityViewController(new NSExtensionItem[] { extensionItem }, null);
-                activityViewController.CompletionHandler = (activityType, completed) =>
+                if(message.Command == "scheduleLockTimer")
                 {
-                    page.EnabledExtension(completed && activityType == "com.8bit.bitwarden.find-login-action-extension");
-                };
-
-                var modal = UIApplication.SharedApplication.KeyWindow.RootViewController.ModalViewController;
-                if(activityViewController.PopoverPresentationController != null)
-                {
-                    activityViewController.PopoverPresentationController.SourceView = modal.View;
-                    var frame = UIScreen.MainScreen.Bounds;
-                    frame.Height /= 2;
-                    activityViewController.PopoverPresentationController.SourceRect = frame;
+                    LockTimer((int)message.Data);
                 }
+                else if(message.Command == "cancelLockTimer")
+                {
+                    CancelLockTimer();
+                }
+                else if(message.Command == "startEventTimer")
+                {
+                    StartEventTimer();
+                }
+                else if(message.Command == "stopEventTimer")
+                {
+                    var task = StopEventTimerAsync();
+                }
+                else if(message.Command == "updatedTheme")
+                {
+                    // ThemeManager.SetThemeStyle(message.Data as string);
+                }
+                else if(message.Command == "copiedToClipboard")
+                {
 
-                modal.PresentViewController(activityViewController, true, null);
-            });
-
-            UIApplication.SharedApplication.StatusBarHidden = false;
-            UIApplication.SharedApplication.StatusBarStyle = UIStatusBarStyle.LightContent;
-
-            MessagingCenter.Subscribe<Xamarin.Forms.Application, bool>(Xamarin.Forms.Application.Current, "ShowStatusBar", (sender, show) =>
-            {
-                UIApplication.SharedApplication.SetStatusBarHidden(!show, false);
+                    Device.BeginInvokeOnMainThread(() =>
+                    {
+                        var task = ClearClipboardTimerAsync(message.Data as Tuple<string, int?, bool>);
+                    });
+                }
+                else if(message.Command == "listenYubiKeyOTP")
+                {
+                    ListenYubiKey((bool)message.Data);
+                }
+                else if(message.Command == "unlocked")
+                {
+                    var needsAutofillReplacement = await _storageService.GetAsync<bool?>(
+                        Core.Constants.AutofillNeedsIdentityReplacementKey);
+                    if(needsAutofillReplacement.GetValueOrDefault())
+                    {
+                        await ASHelpers.ReplaceAllIdentities();
+                    }
+                }
+                else if(message.Command == "showAppExtension")
+                {
+                    Device.BeginInvokeOnMainThread(() => ShowAppExtension((ExtensionPageViewModel)message.Data));
+                }
+                else if(message.Command == "showStatusBar")
+                {
+                    Device.BeginInvokeOnMainThread(() =>
+                        UIApplication.SharedApplication.SetStatusBarHidden(!(bool)message.Data, false));
+                }
+                else if(message.Command == "syncCompleted")
+                {
+                    if(message.Data is Dictionary<string, object> data && data.ContainsKey("successfully"))
+                    {
+                        var success = data["successfully"] as bool?;
+                        if(success.GetValueOrDefault() && _deviceActionService.SystemMajorVersion() >= 12)
+                        {
+                            await ASHelpers.ReplaceAllIdentities();
+                        }
+                    }
+                }
+                else if(message.Command == "addedCipher" || message.Command == "editedCipher")
+                {
+                    if(_deviceActionService.SystemMajorVersion() >= 12)
+                    {
+                        if(await ASHelpers.IdentitiesCanIncremental())
+                        {
+                            var cipherId = message.Data as string;
+                            if(message.Command == "addedCipher" && !string.IsNullOrWhiteSpace(cipherId))
+                            {
+                                var identity = await ASHelpers.GetCipherIdentityAsync(cipherId);
+                                if(identity == null)
+                                {
+                                    return;
+                                }
+                                await ASCredentialIdentityStore.SharedStore?.SaveCredentialIdentitiesAsync(
+                                    new ASPasswordCredentialIdentity[] { identity });
+                                return;
+                            }
+                        }
+                        await ASHelpers.ReplaceAllIdentities();
+                    }
+                }
+                else if(message.Command == "deletedCipher")
+                {
+                    if(_deviceActionService.SystemMajorVersion() >= 12)
+                    {
+                        if(await ASHelpers.IdentitiesCanIncremental())
+                        {
+                            var identity = ASHelpers.ToCredentialIdentity(
+                                message.Data as Bit.Core.Models.View.CipherView);
+                            if(identity == null)
+                            {
+                                return;
+                            }
+                            await ASCredentialIdentityStore.SharedStore?.RemoveCredentialIdentitiesAsync(
+                                new ASPasswordCredentialIdentity[] { identity });
+                            return;
+                        }
+                        await ASHelpers.ReplaceAllIdentities();
+                    }
+                }
+                else if(message.Command == "loggedOut")
+                {
+                    if(_deviceActionService.SystemMajorVersion() >= 12)
+                    {
+                        await ASCredentialIdentityStore.SharedStore?.RemoveAllCredentialIdentitiesAsync();
+                    }
+                }
             });
 
             return base.FinishedLaunching(app, options);
@@ -119,55 +184,33 @@ namespace Bit.iOS
             {
                 Tag = 4321
             };
-
             var backgroundView = new UIView(UIApplication.SharedApplication.KeyWindow.Frame)
             {
-                BackgroundColor = new UIColor(red: 0.93f, green: 0.94f, blue: 0.96f, alpha: 1.0f)
+                BackgroundColor = ((Color)Xamarin.Forms.Application.Current.Resources["SplashBackgroundColor"])
+                    .ToUIColor()
             };
-
-            var imageView = new UIImageView(new UIImage("logo.png"))
+            var theme = ThemeManager.GetTheme(false);
+            var darkbasedTheme = theme == "dark" || theme == "black" || theme == "nord";
+            var logo = new UIImage(darkbasedTheme ? "logo_white.png" : "logo.png");
+            var imageView = new UIImageView(logo)
             {
                 Center = new CoreGraphics.CGPoint(view.Center.X, view.Center.Y - 30)
             };
-
             view.AddSubview(backgroundView);
             view.AddSubview(imageView);
-
             UIApplication.SharedApplication.KeyWindow.AddSubview(view);
             UIApplication.SharedApplication.KeyWindow.BringSubviewToFront(view);
             UIApplication.SharedApplication.KeyWindow.EndEditing(true);
             UIApplication.SharedApplication.SetStatusBarHidden(true, false);
-
-            // Log the date/time we last backgrounded
-            Settings.AddOrUpdateValue(App.Constants.LastActivityDate, DateTime.UtcNow);
-
-            // Dispatch Google Analytics
-            SendGoogleAnalyticsHitsInBackground();
-
+            _storageService.SaveAsync(Constants.LastActiveKey, DateTime.UtcNow);
+            _messagingService.Send("slept");
             base.DidEnterBackground(uiApplication);
-            Debug.WriteLine("DidEnterBackground");
-        }
-
-
-        public override void OnResignActivation(UIApplication uiApplication)
-        {
-            base.OnResignActivation(uiApplication);
-            Debug.WriteLine("OnResignActivation");
-        }
-
-        public override void WillTerminate(UIApplication uiApplication)
-        {
-            base.WillTerminate(uiApplication);
-            Debug.WriteLine("WillTerminate");
         }
 
         public override void OnActivated(UIApplication uiApplication)
         {
             base.OnActivated(uiApplication);
-            Debug.WriteLine("OnActivated");
-
             UIApplication.SharedApplication.ApplicationIconBadgeNumber = 0;
-
             var view = UIApplication.SharedApplication.KeyWindow.ViewWithTag(4321);
             if(view != null)
             {
@@ -178,141 +221,271 @@ namespace Bit.iOS
 
         public override void WillEnterForeground(UIApplication uiApplication)
         {
-            SendResumedMessage();
-
-            // Restores the dispatch interval because dispatchWithCompletionHandler
-            // has disabled automatic dispatching.
-            Gai.SharedInstance.DispatchInterval = 10;
-
+            _messagingService.Send("resumed");
             base.WillEnterForeground(uiApplication);
-            Debug.WriteLine("WillEnterForeground");
         }
 
-        public override bool OpenUrl(UIApplication application, NSUrl url, string sourceApplication, NSObject annotation)
+        public override bool OpenUrl(UIApplication application, NSUrl url, string sourceApplication,
+            NSObject annotation)
         {
             return true;
         }
 
         public override void FailedToRegisterForRemoteNotifications(UIApplication application, NSError error)
         {
-            if(CrossPushNotification.Current is IPushNotificationHandler)
-            {
-                ((IPushNotificationHandler)CrossPushNotification.Current).OnErrorReceived(error);
-            }
+            _pushHandler?.OnErrorReceived(error);
         }
 
         public override void RegisteredForRemoteNotifications(UIApplication application, NSData deviceToken)
         {
-            if(CrossPushNotification.Current is IPushNotificationHandler)
-            {
-                ((IPushNotificationHandler)CrossPushNotification.Current).OnRegisteredSuccess(deviceToken);
-            }
+            _pushHandler?.OnRegisteredSuccess(deviceToken);
         }
 
-        public override void DidRegisterUserNotificationSettings(UIApplication application, UIUserNotificationSettings notificationSettings)
+        public override void DidRegisterUserNotificationSettings(UIApplication application,
+            UIUserNotificationSettings notificationSettings)
         {
             application.RegisterForRemoteNotifications();
         }
 
-        public override void DidReceiveRemoteNotification(UIApplication application, NSDictionary userInfo, Action<UIBackgroundFetchResult> completionHandler)
+        public override void DidReceiveRemoteNotification(UIApplication application, NSDictionary userInfo,
+            Action<UIBackgroundFetchResult> completionHandler)
         {
-            if(CrossPushNotification.Current is IPushNotificationHandler)
-            {
-                ((IPushNotificationHandler)CrossPushNotification.Current).OnMessageReceived(userInfo);
-            }
+            _pushHandler?.OnMessageReceived(userInfo);
         }
 
         public override void ReceivedRemoteNotification(UIApplication application, NSDictionary userInfo)
         {
-            if(CrossPushNotification.Current is IPushNotificationHandler)
-            {
-                ((IPushNotificationHandler)CrossPushNotification.Current).OnMessageReceived(userInfo);
-            }
+            _pushHandler?.OnMessageReceived(userInfo);
         }
 
-        private void SendResumedMessage()
+        public void InitApp()
         {
-            MessagingCenter.Send(Xamarin.Forms.Application.Current, "Resumed", false);
-        }
-
-        private void SetIoc()
-        {
-            var container = new UnityContainer();
-
-            container
-                // Services
-                .RegisterType<IDatabaseService, DatabaseService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISqlService, SqlService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISecureStorageService, KeyChainStorageService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ICryptoService, CryptoService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IKeyDerivationService, CommonCryptoKeyDerivationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthService, AuthService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderService, FolderService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteService, SiteService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISyncService, SyncService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IClipboardService, ClipboardService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IPushNotificationListener, PushNotificationListener>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAppIdService, AppIdService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IPasswordGenerationService, PasswordGenerationService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IReflectionService, ReflectionService>(new ContainerControlledLifetimeManager())
-                .RegisterType<ILockService, LockService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAppInfoService, AppInfoService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IGoogleAnalyticsService, GoogleAnalyticsService>(new ContainerControlledLifetimeManager())
-                .RegisterType<IDeviceInfoService, DeviceInfoService>(new ContainerControlledLifetimeManager())
-                // Repositories
-                .RegisterType<IFolderRepository, FolderRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IFolderApiRepository, FolderApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteRepository, SiteRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ISiteApiRepository, SiteApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAuthApiRepository, AuthApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IDeviceApiRepository, DeviceApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<IAccountsApiRepository, AccountsApiRepository>(new ContainerControlledLifetimeManager())
-                .RegisterType<ICipherApiRepository, CipherApiRepository>(new ContainerControlledLifetimeManager())
-                // Other
-                .RegisterInstance(CrossConnectivity.Current, new ContainerControlledLifetimeManager())
-                .RegisterInstance(UserDialogs.Instance, new ContainerControlledLifetimeManager())
-                .RegisterInstance(CrossFingerprint.Current, new ContainerControlledLifetimeManager());
-
-            Settings = new Settings("group.com.8bit.bitwarden");
-            container.RegisterInstance(Settings, new ContainerControlledLifetimeManager());
-
-            CrossPushNotification.Initialize(container.Resolve<IPushNotificationListener>());
-            container.RegisterInstance(CrossPushNotification.Current, new ContainerControlledLifetimeManager());
-
-            Resolver.SetResolver(new UnityResolver(container));
-        }
-
-        /// <summary>
-        /// This method sends any queued hits when the app enters the background.
-        /// ref: https://developers.google.com/analytics/devguides/collection/ios/v3/dispatch
-        /// </summary>
-        private void SendGoogleAnalyticsHitsInBackground()
-        {
-            var taskExpired = false;
-            var taskId = UIApplication.SharedApplication.BeginBackgroundTask(() =>
-            {
-                taskExpired = true;
-            });
-
-            if(taskId == UIApplication.BackgroundTaskInvalid)
+            if(ServiceContainer.RegisteredServices.Count > 0)
             {
                 return;
             }
 
-            _dispatchHandler = (result) =>
+            // Migration services
+            ServiceContainer.Register<ILogService>("logService", new ConsoleLogService());
+            ServiceContainer.Register("settingsShim", new App.Migration.SettingsShim(iOSCoreHelpers.AppGroupId));
+            if(App.Migration.MigrationHelpers.NeedsMigration())
             {
-                // Send hits until no hits are left, a dispatch error occurs, or the background task expires.
-                if(_dispatchHandler != null && result == DispatchResult.Good && !taskExpired)
+                ServiceContainer.Register<App.Migration.Abstractions.IOldSecureStorageService>(
+                    "oldSecureStorageService", new Migration.KeyChainStorageService());
+            }
+
+            // Note: This might cause a race condition. Investigate more.
+            Task.Run(() =>
+            {
+                FFImageLoading.Forms.Platform.CachedImageRenderer.Init();
+                FFImageLoading.ImageService.Instance.Initialize(new FFImageLoading.Config.Configuration
                 {
-                    Gai.SharedInstance.Dispatch(_dispatchHandler);
+                    FadeAnimationEnabled = false,
+                    FadeAnimationForCachedImages = false
+                });
+            });
+
+            iOSCoreHelpers.RegisterLocalServices();
+            RegisterPush();
+            ServiceContainer.Init();
+            iOSCoreHelpers.RegisterHockeyApp();
+            _pushHandler = new iOSPushNotificationHandler(
+                ServiceContainer.Resolve<IPushNotificationListenerService>("pushNotificationListenerService"));
+            _nfcDelegate = new NFCReaderDelegate((success, message) =>
+                _messagingService.Send("gotYubiKeyOTP", message));
+
+            iOSCoreHelpers.Bootstrap();
+        }
+
+        private void RegisterPush()
+        {
+            var notificationListenerService = new PushNotificationListenerService();
+            ServiceContainer.Register<IPushNotificationListenerService>(
+                "pushNotificationListenerService", notificationListenerService);
+            var iosPushNotificationService = new iOSPushNotificationService();
+            ServiceContainer.Register<IPushNotificationService>(
+                "pushNotificationService", iosPushNotificationService);
+        }
+
+        private void ListenYubiKey(bool listen)
+        {
+            if(_deviceActionService.SupportsNfc())
+            {
+                _nfcSession?.InvalidateSession();
+                _nfcSession?.Dispose();
+                _nfcSession = null;
+                if(listen)
+                {
+                    _nfcSession = new NFCNdefReaderSession(_nfcDelegate, null, true)
+                    {
+                        AlertMessage = AppResources.HoldYubikeyNearTop
+                    };
+                    _nfcSession.BeginSession();
                 }
-                else
+            }
+        }
+
+        private void LockTimer(int lockOptionMinutes)
+        {
+            if(_lockBackgroundTaskId > 0)
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_lockBackgroundTaskId);
+                _lockBackgroundTaskId = 0;
+            }
+            _lockBackgroundTaskId = UIApplication.SharedApplication.BeginBackgroundTask(() =>
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_lockBackgroundTaskId);
+                _lockBackgroundTaskId = 0;
+            });
+            var lockOptionMs = lockOptionMinutes * 60000;
+            _lockTimer?.Invalidate();
+            _lockTimer?.Dispose();
+            _lockTimer = null;
+            var lockMsSpan = TimeSpan.FromMilliseconds(lockOptionMs + 10);
+            Device.BeginInvokeOnMainThread(() =>
+            {
+                _lockTimer = NSTimer.CreateScheduledTimer(lockMsSpan, timer =>
                 {
-                    UIApplication.SharedApplication.EndBackgroundTask(taskId);
+                    Device.BeginInvokeOnMainThread(() =>
+                    {
+                        _lockService.CheckLockAsync();
+                        _lockTimer?.Invalidate();
+                        _lockTimer?.Dispose();
+                        _lockTimer = null;
+                        if(_lockBackgroundTaskId > 0)
+                        {
+                            UIApplication.SharedApplication.EndBackgroundTask(_lockBackgroundTaskId);
+                            _lockBackgroundTaskId = 0;
+                        }
+                    });
+                });
+            });
+        }
+
+        private void CancelLockTimer()
+        {
+            _lockTimer?.Invalidate();
+            _lockTimer?.Dispose();
+            _lockTimer = null;
+            if(_lockBackgroundTaskId > 0)
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_lockBackgroundTaskId);
+                _lockBackgroundTaskId = 0;
+            }
+        }
+
+        private async Task ClearClipboardTimerAsync(Tuple<string, int?, bool> data)
+        {
+            if(data.Item3)
+            {
+                return;
+            }
+            var clearMs = data.Item2;
+            if(clearMs == null)
+            {
+                var clearSeconds = await _storageService.GetAsync<int?>(Constants.ClearClipboardKey);
+                if(clearSeconds != null)
+                {
+                    clearMs = clearSeconds.Value * 1000;
+                }
+            }
+            if(clearMs == null)
+            {
+                return;
+            }
+            if(_clipboardBackgroundTaskId > 0)
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_clipboardBackgroundTaskId);
+                _clipboardBackgroundTaskId = 0;
+            }
+            _clipboardBackgroundTaskId = UIApplication.SharedApplication.BeginBackgroundTask(() =>
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_clipboardBackgroundTaskId);
+                _clipboardBackgroundTaskId = 0;
+            });
+            _clipboardTimer?.Invalidate();
+            _clipboardTimer?.Dispose();
+            _clipboardTimer = null;
+            var lastClipboardChangeCount = UIPasteboard.General.ChangeCount;
+            var clearMsSpan = TimeSpan.FromMilliseconds(clearMs.Value);
+            _clipboardTimer = NSTimer.CreateScheduledTimer(clearMsSpan, timer =>
+            {
+                Device.BeginInvokeOnMainThread(() =>
+                {
+                    var changeNow = UIPasteboard.General.ChangeCount;
+                    if(changeNow == 0 || lastClipboardChangeCount == changeNow)
+                    {
+                        UIPasteboard.General.String = string.Empty;
+                    }
+                    _clipboardTimer?.Invalidate();
+                    _clipboardTimer?.Dispose();
+                    _clipboardTimer = null;
+                    if(_clipboardBackgroundTaskId > 0)
+                    {
+                        UIApplication.SharedApplication.EndBackgroundTask(_clipboardBackgroundTaskId);
+                        _clipboardBackgroundTaskId = 0;
+                    }
+                });
+            });
+        }
+
+        private void ShowAppExtension(ExtensionPageViewModel extensionPageViewModel)
+        {
+            var itemProvider = new NSItemProvider(new NSDictionary(), Core.Constants.UTTypeAppExtensionSetup);
+            var extensionItem = new NSExtensionItem
+            {
+                Attachments = new NSItemProvider[] { itemProvider }
+            };
+            var activityViewController = new UIActivityViewController(new NSExtensionItem[] { extensionItem }, null)
+            {
+                CompletionHandler = (activityType, completed) =>
+                {
+                    extensionPageViewModel.EnabledExtension(completed && activityType == iOSCoreHelpers.AppExtensionId);
                 }
             };
+            var modal = UIApplication.SharedApplication.KeyWindow.RootViewController.ModalViewController;
+            if(activityViewController.PopoverPresentationController != null)
+            {
+                activityViewController.PopoverPresentationController.SourceView = modal.View;
+                var frame = UIScreen.MainScreen.Bounds;
+                frame.Height /= 2;
+                activityViewController.PopoverPresentationController.SourceRect = frame;
+            }
+            modal.PresentViewController(activityViewController, true, null);
+        }
 
-            Gai.SharedInstance.Dispatch(_dispatchHandler);
+        private void StartEventTimer()
+        {
+            _eventTimer?.Invalidate();
+            _eventTimer?.Dispose();
+            _eventTimer = null;
+            Device.BeginInvokeOnMainThread(() =>
+            {
+                _eventTimer = NSTimer.CreateScheduledTimer(60, true, timer =>
+                {
+                    var task = Task.Run(() => _eventService.UploadEventsAsync());
+                });
+            });
+        }
+
+        private async Task StopEventTimerAsync()
+        {
+            _eventTimer?.Invalidate();
+            _eventTimer?.Dispose();
+            _eventTimer = null;
+            if(_eventBackgroundTaskId > 0)
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_eventBackgroundTaskId);
+                _eventBackgroundTaskId = 0;
+            }
+            _eventBackgroundTaskId = UIApplication.SharedApplication.BeginBackgroundTask(() =>
+            {
+                UIApplication.SharedApplication.EndBackgroundTask(_eventBackgroundTaskId);
+                _eventBackgroundTaskId = 0;
+            });
+            await _eventService.UploadEventsAsync();
+            UIApplication.SharedApplication.EndBackgroundTask(_eventBackgroundTaskId);
+            _eventBackgroundTaskId = 0;
         }
     }
 }
